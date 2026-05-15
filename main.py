@@ -94,17 +94,25 @@ async def webhook(request: Request):
     if challenge:
         return {"challenge": challenge}
 
+    logger.info("解密成功, event_body keys: %s, type: %s",
+                 list(event_body.keys()), event_body.get("type"))
+
     event = event_body.get("event", {})
-    if event.get("event_type") != "im.message.receive_v1":
+    et = event.get("event_type", "")
+    logger.info("事件类型: %s, event keys: %s", et, list(event.keys()))
+
+    if et != "im.message.receive_v1":
         return {"ok": True}
 
     message = event.get("message", {})
     chat_type = message.get("chat_type", "")
     msg_type = message.get("message_type", "")
+    logger.info("消息: chat_type=%s msg_type=%s", chat_type, msg_type)
 
     if chat_type == "p2p" and msg_type == "text":
         sender_id = event["sender"]["sender_id"]["open_id"]
         content = json.loads(message["content"]).get("text", "")
+        logger.info("来自 %s: %s", sender_id, content)
 
         try:
             logger.info("调用 DeepSeek API: %s", content[:100])

@@ -27,6 +27,10 @@ app = FastAPI()
 # 飞书 token 缓存
 token_cache = {"token": "", "expires": 0}
 
+# 对话记忆: {open_id: [{"role":..., "content":...}, ...]}
+conversations = {}
+MAX_HISTORY = 10  # 保留最近 10 条消息
+
 async def get_tenant_token():
     import time
     if token_cache["token"] and time.time() < token_cache["expires"]:
@@ -115,18 +119,29 @@ async def webhook(request: Request):
         content = json.loads(message["content"]).get("text", "")
         logger.info("来自 %s: %s", sender_id, content)
 
+        # 维护对话历史
+        if sender_id not in conversations:
+            conversations[sender_id] = []
+        conversations[sender_id].append({"role": "user", "content": content})
+        conversations[sender_id] = conversations[sender_id][-MAX_HISTORY:]
+
+        messages = [
+            {"role": "system", "content": "你是飞书上的 AI 助手，由 DeepSeek 驱动，用中文回答用户问题。"},
+        ]
+        messages += conversations[sender_id]
+
         try:
-            logger.info("调用 DeepSeek API: %s", content[:100])
+            logger.info("调用 DeepSeek API")
             resp = await client.chat.completions.create(
                 model="deepseek-chat",
                 max_tokens=1024,
-                messages=[
-                    {"role": "system", "content": "你是飞书上的 DeepSeek 智能助手，用中文回答用户问题。"},
-                    {"role": "user", "content": content},
-                ],
+                messages=messages,
             )
             reply = resp.choices[0].message.content or ""
-            logger.info("DeepSeek 回复成功: %s", reply[:100])
+            logger.info("DeepSeek 回复成功")
+
+            # 保存 AI 回复到历史
+            conversations[sender_id].append({"role": "assistant", "content": reply})
         except Exception as e:
             reply = f"抱歉，我出错了：{e}"
             logger.error("DeepSeek 调用失败: %s", e)

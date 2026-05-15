@@ -63,14 +63,15 @@ def decrypt(timestamp: str, nonce: str, body: dict) -> dict:
     if not encrypt:
         return body
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-    from cryptography.hazmat.primitives import padding
 
-    key = hashlib.sha256(FEISHU_ENCRYPT_KEY.encode()).digest()[:32]
-    cipher = Cipher(algorithms.AES(key), modes.CBC(b"\x00" * 16))
+    key = hashlib.sha256(FEISHU_ENCRYPT_KEY.encode()).digest()
+    iv = key[:16]
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
     decryptor = cipher.decryptor()
     raw = decryptor.update(base64.b64decode(encrypt)) + decryptor.finalize()
-    unpadder = padding.PKCS7(128).unpadder()
-    return json.loads(unpadder.update(raw) + unpadder.finalize())
+    # PKCS7 去填充
+    pad_len = raw[-1]
+    return json.loads(raw[:-pad_len])
 
 
 # 同时处理 / 和 /webhook 两个路径
@@ -83,7 +84,11 @@ async def webhook(request: Request):
     ts = request.headers.get("X-Lark-Request-Timestamp", "0")
     nonce = request.headers.get("X-Lark-Request-Nonce", "")
 
-    event_body = decrypt(ts, nonce, body)
+    try:
+        event_body = decrypt(ts, nonce, body)
+    except Exception as e:
+        logger.error("解密失败: %s", e)
+        return {"error": "decrypt failed"}
     challenge = event_body.get("challenge")
     if challenge:
         return {"challenge": challenge}

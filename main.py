@@ -73,6 +73,8 @@ def decrypt(timestamp: str, nonce: str, body: dict) -> dict:
     return json.loads(unpadder.update(raw) + unpadder.finalize())
 
 
+# 同时处理 / 和 /webhook 两个路径
+@app.post("/")
 @app.post("/webhook")
 async def webhook(request: Request):
     body = await request.json()

@@ -64,14 +64,17 @@ def decrypt(timestamp: str, nonce: str, body: dict) -> dict:
         return body
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
+    raw = base64.b64decode(encrypt)
     key = hashlib.sha256(FEISHU_ENCRYPT_KEY.encode()).digest()
-    iv = key[:16]
+    iv = raw[:16]          # IV 在密文的前 16 字节
+    data = raw[16:]         # 剩下的才是真正的密文
+
     cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
     decryptor = cipher.decryptor()
-    raw = decryptor.update(base64.b64decode(encrypt)) + decryptor.finalize()
+    plain = decryptor.update(data) + decryptor.finalize()
     # PKCS7 去填充
-    pad_len = raw[-1]
-    return json.loads(raw[:-pad_len])
+    pad_len = plain[-1]
+    return json.loads(plain[:-pad_len])
 
 
 # 同时处理 / 和 /webhook 两个路径

@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: feishu-claude-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: FEISHU_APP_ID
+        sync: false
+      - key: FEISHU_APP_SECRET
+        sync: false
+      - key: FEISHU_ENCRYPT_KEY
+        sync: false
+      - key: CLAUDE_API_KEY
+        sync: false

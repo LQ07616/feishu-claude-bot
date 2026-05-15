@@ -117,11 +117,16 @@ async def webhook(request: Request):
                 ],
             )
             reply = resp.choices[0].message.content or ""
-            logger.info("DeepSeek 回复成功")
+            logger.info("DeepSeek 回复成功: %s", reply[:100])
         except Exception as e:
             reply = f"抱歉，我出错了：{e}"
+            logger.error("DeepSeek 调用失败: %s", e)
 
-        await send_message(sender_id, reply)
+        try:
+            await send_message(sender_id, reply)
+            logger.info("消息已发送到飞书")
+        except Exception as e:
+            logger.error("飞书消息发送失败: %s", e)
 
     return {"ok": True}
 

@@ -98,7 +98,8 @@ async def webhook(request: Request):
                  list(event_body.keys()), event_body.get("type"))
 
     event = event_body.get("event", {})
-    et = event.get("event_type", "")
+    header = event_body.get("header", {})
+    et = header.get("event_type", "") or event.get("event_type", "")
     logger.info("事件类型: %s, event keys: %s", et, list(event.keys()))
 
     if et != "im.message.receive_v1":

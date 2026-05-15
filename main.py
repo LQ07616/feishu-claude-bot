@@ -1,14 +1,14 @@
-"""飞书 Claude 智能体 - FastAPI 后端"""
+"""飞书 DeepSeek 智能体 - FastAPI 后端"""
 import json, os, logging, hashlib, base64
 from fastapi import FastAPI, Request
 import httpx
-from anthropic import Anthropic
+from openai import OpenAI
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 环境变量检查（启动时检查，缺啥一目了然）
-REQUIRED_ENV = ["FEISHU_APP_ID", "FEISHU_APP_SECRET", "CLAUDE_API_KEY"]
+# 环境变量检查
+REQUIRED_ENV = ["FEISHU_APP_ID", "FEISHU_APP_SECRET", "DEEPSEEK_API_KEY"]
 missing = [v for v in REQUIRED_ENV if not os.getenv(v)]
 if missing:
     logger.error("缺少环境变量: %s", ", ".join(missing))
@@ -17,9 +17,12 @@ if missing:
 FEISHU_APP_ID = os.getenv("FEISHU_APP_ID", "")
 FEISHU_APP_SECRET = os.getenv("FEISHU_APP_SECRET", "")
 FEISHU_ENCRYPT_KEY = os.getenv("FEISHU_ENCRYPT_KEY", "")
-CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY", "")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 
-anthropic = Anthropic(api_key=CLAUDE_API_KEY) if CLAUDE_API_KEY else None
+client = OpenAI(
+    api_key=DEEPSEEK_API_KEY,
+    base_url="https://api.deepseek.com",
+) if DEEPSEEK_API_KEY else None
 
 app = FastAPI()
 
@@ -96,13 +99,15 @@ async def webhook(request: Request):
         content = json.loads(message["content"]).get("text", "")
 
         try:
-            msg = await anthropic.messages.create(
-                model="claude-sonnet-4-20250514",
+            resp = client.chat.completions.create(
+                model="deepseek-chat",
                 max_tokens=1024,
-                system="你是飞书上的 Claude 智能助手，用中文回答用户问题。",
-                messages=[{"role": "user", "content": content}],
+                messages=[
+                    {"role": "system", "content": "你是飞书上的 DeepSeek 智能助手，用中文回答用户问题。"},
+                    {"role": "user", "content": content},
+                ],
             )
-            reply = msg.content[0].text
+            reply = resp.choices[0].message.content
         except Exception as e:
             reply = f"抱歉，我出错了：{e}"
 
@@ -113,4 +118,4 @@ async def webhook(request: Request):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "env_ok": bool(CLAUDE_API_KEY)}
+    return {"status": "ok", "env_ok": bool(DEEPSEEK_API_KEY)}

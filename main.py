@@ -2,26 +2,24 @@
 import json, os, logging, hashlib, base64
 from fastapi import FastAPI, Request
 import httpx
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# 环境变量检查
-REQUIRED_ENV = ["FEISHU_APP_ID", "FEISHU_APP_SECRET", "DEEPSEEK_API_KEY"]
-missing = [v for v in REQUIRED_ENV if not os.getenv(v)]
-if missing:
-    logger.error("缺少环境变量: %s", ", ".join(missing))
-    logger.error("请在 Render 的 Environment Variables 中设置后重新部署")
 
 FEISHU_APP_ID = os.getenv("FEISHU_APP_ID", "")
 FEISHU_APP_SECRET = os.getenv("FEISHU_APP_SECRET", "")
 FEISHU_ENCRYPT_KEY = os.getenv("FEISHU_ENCRYPT_KEY", "")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 
-client = OpenAI(
+missing = [v for v in ["FEISHU_APP_ID", "FEISHU_APP_SECRET", "DEEPSEEK_API_KEY"] if not os.getenv(v)]
+if missing:
+    logger.error("缺少环境变量: %s", ", ".join(missing))
+
+client = AsyncOpenAI(
     api_key=DEEPSEEK_API_KEY,
     base_url="https://api.deepseek.com",
+    timeout=httpx.Timeout(60.0, connect=10.0),
 ) if DEEPSEEK_API_KEY else None
 
 app = FastAPI()
@@ -109,7 +107,8 @@ async def webhook(request: Request):
         content = json.loads(message["content"]).get("text", "")
 
         try:
-            resp = client.chat.completions.create(
+            logger.info("调用 DeepSeek API: %s", content[:100])
+            resp = await client.chat.completions.create(
                 model="deepseek-chat",
                 max_tokens=1024,
                 messages=[
@@ -117,7 +116,8 @@ async def webhook(request: Request):
                     {"role": "user", "content": content},
                 ],
             )
-            reply = resp.choices[0].message.content
+            reply = resp.choices[0].message.content or ""
+            logger.info("DeepSeek 回复成功")
         except Exception as e:
             reply = f"抱歉，我出错了：{e}"
 

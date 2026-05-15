@@ -1,8 +1,7 @@
-"""飞书 DeepSeek 智能体 - FastAPI 后端"""
+"""飞书中转站 - 把消息转给 CC 处理"""
 import json, os, logging, hashlib, base64
 from fastapi import FastAPI, Request
 import httpx
-from openai import AsyncOpenAI
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -10,26 +9,15 @@ logger = logging.getLogger(__name__)
 FEISHU_APP_ID = os.getenv("FEISHU_APP_ID", "")
 FEISHU_APP_SECRET = os.getenv("FEISHU_APP_SECRET", "")
 FEISHU_ENCRYPT_KEY = os.getenv("FEISHU_ENCRYPT_KEY", "")
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
-
-missing = [v for v in ["FEISHU_APP_ID", "FEISHU_APP_SECRET", "DEEPSEEK_API_KEY"] if not os.getenv(v)]
-if missing:
-    logger.error("缺少环境变量: %s", ", ".join(missing))
-
-client = AsyncOpenAI(
-    api_key=DEEPSEEK_API_KEY,
-    base_url="https://api.deepseek.com",
-    timeout=httpx.Timeout(60.0, connect=10.0),
-) if DEEPSEEK_API_KEY else None
 
 app = FastAPI()
 
-# 飞书 token 缓存
-token_cache = {"token": "", "expires": 0}
+# 待处理消息队列: [{"from": "ou_xxx", "msg": "你好", "time": "...", "msg_id": "om_xxx"}, ...]
+pending_messages = []
+# 已处理消息 ID 集合（去重）
+processed_ids = set()
 
-# 对话记忆: {open_id: [{"role":..., "content":...}, ...]}
-conversations = {}
-MAX_HISTORY = 10  # 保留最近 10 条消息
+token_cache = {"token": "", "expires": 0}
 
 async def get_tenant_token():
     import time
@@ -68,23 +56,20 @@ def decrypt(timestamp: str, nonce: str, body: dict) -> dict:
 
     raw = base64.b64decode(encrypt)
     key = hashlib.sha256(FEISHU_ENCRYPT_KEY.encode()).digest()
-    iv = raw[:16]          # IV 在密文的前 16 字节
-    data = raw[16:]         # 剩下的才是真正的密文
-
+    iv = raw[:16]
+    data = raw[16:]
     cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
     decryptor = cipher.decryptor()
     plain = decryptor.update(data) + decryptor.finalize()
-    # PKCS7 去填充
     pad_len = plain[-1]
     return json.loads(plain[:-pad_len])
 
 
-# 同时处理 / 和 /webhook 两个路径
 @app.post("/")
 @app.post("/webhook")
 async def webhook(request: Request):
     body = await request.json()
-    logger.info("收到飞书回调: %s", json.dumps(body, ensure_ascii=False)[:200])
+    logger.info("收到飞书回调")
 
     ts = request.headers.get("X-Lark-Request-Timestamp", "0")
     nonce = request.headers.get("X-Lark-Request-Nonce", "")
@@ -94,67 +79,59 @@ async def webhook(request: Request):
     except Exception as e:
         logger.error("解密失败: %s", e)
         return {"error": "decrypt failed"}
+
     challenge = event_body.get("challenge")
     if challenge:
         return {"challenge": challenge}
 
-    logger.info("解密成功, event_body keys: %s, type: %s",
-                 list(event_body.keys()), event_body.get("type"))
-
-    event = event_body.get("event", {})
     header = event_body.get("header", {})
-    et = header.get("event_type", "") or event.get("event_type", "")
-    logger.info("事件类型: %s, event keys: %s", et, list(event.keys()))
-
+    et = header.get("event_type", "") or event_body.get("event", {}).get("event_type", "")
     if et != "im.message.receive_v1":
         return {"ok": True}
 
+    event = event_body.get("event", {})
     message = event.get("message", {})
     chat_type = message.get("chat_type", "")
     msg_type = message.get("message_type", "")
-    logger.info("消息: chat_type=%s msg_type=%s", chat_type, msg_type)
+    msg_id = message.get("message_id", "")
 
     if chat_type == "p2p" and msg_type == "text":
         sender_id = event["sender"]["sender_id"]["open_id"]
         content = json.loads(message["content"]).get("text", "")
-        logger.info("来自 %s: %s", sender_id, content)
 
-        # 维护对话历史
-        if sender_id not in conversations:
-            conversations[sender_id] = []
-        conversations[sender_id].append({"role": "user", "content": content})
-        conversations[sender_id] = conversations[sender_id][-MAX_HISTORY:]
+        # 去重，加入待处理队列
+        if msg_id not in processed_ids:
+            processed_ids.add(msg_id)
+            pending_messages.append({
+                "from": sender_id,
+                "msg": content,
+                "time": message.get("create_time", ""),
+                "msg_id": msg_id,
+            })
+            logger.info("收到消息: %s -> %s", sender_id, content)
 
-        messages = [
-            {"role": "system", "content": "你是飞书上的 AI 助手，由 DeepSeek 驱动，用中文回答用户问题。"},
-        ]
-        messages += conversations[sender_id]
+        # 先回复一个正在处理的提示
+        await send_message(sender_id, "✅ 消息已收到，正在处理请稍候...")
 
-        try:
-            logger.info("调用 DeepSeek API")
-            resp = await client.chat.completions.create(
-                model="deepseek-chat",
-                max_tokens=1024,
-                messages=messages,
-            )
-            reply = resp.choices[0].message.content or ""
-            logger.info("DeepSeek 回复成功")
+    return {"ok": True}
 
-            # 保存 AI 回复到历史
-            conversations[sender_id].append({"role": "assistant", "content": reply})
-        except Exception as e:
-            reply = f"抱歉，我出错了：{e}"
-            logger.error("DeepSeek 调用失败: %s", e)
 
-        try:
-            await send_message(sender_id, reply)
-            logger.info("消息已发送到飞书")
-        except Exception as e:
-            logger.error("飞书消息发送失败: %s", e)
+# CC 用来获取消息的接口
+@app.get("/api/inbox")
+async def inbox():
+    msgs = list(pending_messages)
+    return {"count": len(msgs), "messages": msgs}
 
+
+# CC 回复后标记已处理
+@app.post("/api/done")
+async def mark_done(data: dict):
+    msg_id = data.get("msg_id", "")
+    global pending_messages
+    pending_messages = [m for m in pending_messages if m["msg_id"] != msg_id]
     return {"ok": True}
 
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "env_ok": bool(DEEPSEEK_API_KEY)}
+    return {"status": "ok"}
